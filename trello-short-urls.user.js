@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Trello short URLs
 // @namespace    https://github.com/lp250isme/trello-short-urls
-// @version      1.0.0
-// @description  Shorten Trello card/board URLs to /c/{id} and /b/{id}
+// @version      1.0.1
+// @description  Shorten Trello card/board URLs to /c/{id} and /b/{id}, stripping title slugs and query params
 // @author       kv
 // @license      MIT
 // @match        https://trello.com/*
@@ -24,8 +24,9 @@
 
   function cleanAddressBar() {
     const short = shortPath(location.pathname);
-    if (!short || location.pathname === short) return;
-    origReplace(history.state, '', short + location.search + location.hash);
+    if (!short) return;
+    if (location.pathname === short && !location.search) return;
+    origReplace(history.state, '', short + location.hash);
   }
 
   function cleanAnchors(root) {
