@@ -3,8 +3,8 @@
 Tampermonkey / Violentmonkey userscript that shortens Trello URLs.
 
 ```
-https://trello.com/c/hx9e2BSd/718-maintain-on-duty-tests-...
-→ https://trello.com/c/hx9e2BSd
+https://trello.com/c/aBcDeFgH/42-weekend-trip-tokyo
+→ https://trello.com/c/aBcDeFgH
 ```
 
 Also works for boards (`/b/{id}/...` → `/b/{id}`).
