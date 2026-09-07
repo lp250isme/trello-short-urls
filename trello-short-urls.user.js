@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Trello short URLs
 // @namespace    https://github.com/lp250isme/trello-short-urls
-// @version      1.3.0
+// @version      1.4.0
 // @description  Shorten Trello URLs, copy the short link, and join/leave the open card from the header
 // @author       kv
 // @license      MIT
@@ -43,6 +43,19 @@
   function shortUrl() {
     const short = shortPath(location.pathname);
     return short ? location.origin + short : null;
+  }
+
+  function cookie(name) {
+    const m = document.cookie.match(
+      new RegExp('(?:^|; )' + name.replace(/[$()*+./?[\\]^{|}-]/g, '\\$&') + '=([^;]*)')
+    );
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  function hexBytes(n) {
+    const b = new Uint8Array(n);
+    crypto.getRandomValues(b);
+    return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
   }
 
   function cleanAddressBar() {
@@ -149,112 +162,30 @@
     return text ? JSON.parse(text) : null;
   }
 
-  function nodeLabel(node) {
-    return `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''} ${node.textContent || ''}`
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
-  function compactLabel(node) {
-    return nodeLabel(node).replace(/\s+/g, '').toLowerCase();
-  }
-
-  function findClickable(pred, root = document) {
-    return [...root.querySelectorAll('button, a, [role="menuitem"], [role="option"], [role="button"]')].find(
-      (node) => !isOurs(node) && pred(node)
-    );
-  }
-
-  function waitForClickable(pred, timeout = 1800) {
-    return new Promise((resolve) => {
-      const found = findClickable(pred);
-      if (found) return resolve(found);
-      const obs = new MutationObserver(() => {
-        const el = findClickable(pred);
-        if (el) {
-          obs.disconnect();
-          resolve(el);
-        }
-      });
-      obs.observe(document.body, { childList: true, subtree: true });
-      setTimeout(() => {
-        obs.disconnect();
-        resolve(null);
-      }, timeout);
+  // Match Trello web client's mutating /1/cards calls: JSON body with dsc,
+  // no query token, plus x-trello-* headers. dsc in the query string 403s.
+  async function trelloWrite(method, path, operationName, body = {}) {
+    const dsc = cookie('dsc');
+    if (!dsc) throw new Error('missing dsc cookie');
+    const trace = hexBytes(16);
+    const res = await fetch('https://trello.com/1/' + path.replace(/^\//, ''), {
+      method,
+      credentials: 'include',
+      headers: {
+        Accept: '*/*',
+        'Content-Type': 'application/json',
+        'x-trello-client-version': 'build-240418',
+        'x-trello-operation-name': operationName,
+        'x-trello-task': 'edit-card/idMembers',
+        'x-trello-traceid': trace,
+        'x-b3-traceid': trace,
+        'x-b3-spanid': hexBytes(8),
+      },
+      body: JSON.stringify({ ...body, dsc }),
     });
-  }
-
-  function closePopover() {
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-  }
-
-  function isJoinItem(node) {
-    const c = compactLabel(node);
-    if (/清單|看板|board|list|member|成員/.test(c) && !/joincard|加入卡片/.test(c)) return false;
-    return /^(join|加入)(card|卡片)?$/i.test(nodeLabel(node)) || c === 'join' || c === '加入' || c === 'joincard' || c === '加入卡片';
-  }
-
-  function isLeaveItem(node) {
-    const c = compactLabel(node);
-    return /leave|離開|退出/.test(c) && !/board|看板/.test(c);
-  }
-
-  function isRemoveFromCard(node) {
-    const c = compactLabel(node);
-    return /removefromcard|從卡片.*移除|移出卡片|移除此成員/.test(c);
-  }
-
-  async function clickViaActionsMenu(wantLeave) {
-    const actions = document.querySelector('[data-testid="card-back-actions-button"]');
-    if (!actions) return false;
-    const opened = actions.getAttribute('aria-expanded') === 'true';
-    if (!opened) actions.click();
-    const item = await waitForClickable(wantLeave ? isLeaveItem : isJoinItem);
-    if (!item) {
-      if (!opened) closePopover();
-      return false;
-    }
-    item.click();
-    return true;
-  }
-
-  async function leaveViaOwnAvatar() {
-    const me = joinState.me || {};
-    const avatars = [...document.querySelectorAll('[data-testid="card-back-member-avatar"]')];
-    const mine =
-      avatars.find((el) => {
-        const t = nodeLabel(el);
-        return (me.fullName && t.includes(me.fullName)) || (me.username && t.includes(me.username));
-      }) || (avatars.length === 1 ? avatars[0] : null);
-    if (!mine) return false;
-    mine.click();
-    const item = await waitForClickable(isRemoveFromCard);
-    if (!item) {
-      closePopover();
-      return false;
-    }
-    item.click();
-    return true;
-  }
-
-  async function joinViaMembersPicker() {
-    const me = joinState.me || {};
-    const add = findClickable((node) => {
-      const c = compactLabel(node);
-      return /addmembers|新增成員|加入成員|addmember/.test(c);
-    });
-    if (!add) return false;
-    add.click();
-    const item = await waitForClickable((node) => {
-      const t = nodeLabel(node);
-      return (me.fullName && t.includes(me.fullName)) || (me.username && t.includes(me.username));
-    });
-    if (!item) {
-      closePopover();
-      return false;
-    }
-    item.click();
-    return true;
+    if (!res.ok) throw new Error(`${method} ${path} ${res.status}`);
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
   }
 
   function applyJoinButton() {
@@ -303,28 +234,6 @@
     }
   }
 
-  function clickNativeJoinLeave(wantLeave) {
-    const testId = wantLeave ? 'card-back-leave-button' : 'card-back-join-button';
-    const byTestId = document.querySelector(`[data-testid="${testId}"]`);
-    if (byTestId) {
-      byTestId.click();
-      return true;
-    }
-    const re = wantLeave
-      ? /^(Leave|離開|退出)( card|卡片)?$/i
-      : /^(Join|加入)( card|卡片)?$/i;
-    const el = [...document.querySelectorAll('button, a, [role="button"]')].find((node) => {
-      if (isOurs(node)) return false;
-      const text = `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''} ${node.textContent || ''}`
-        .replace(/\s+/g, ' ')
-        .trim();
-      return re.test(text);
-    });
-    if (!el) return false;
-    el.click();
-    return true;
-  }
-
   async function toggleJoin() {
     const short = cardShortLink();
     if (!short || joinState.loading) return;
@@ -332,12 +241,22 @@
     joinState.loading = true;
     applyJoinButton();
     try {
-      if (!joinState.me) await syncJoinState(true);
-      const ok = clickNativeJoinLeave(wantLeave)
-        || (await clickViaActionsMenu(wantLeave))
-        || (wantLeave && (await leaveViaOwnAvatar()))
-        || (!wantLeave && (await joinViaMembersPicker()));
-      if (!ok) throw new Error('no trello control');
+      if (!joinState.meId || !joinState.cardId) await syncJoinState(true);
+      if (!joinState.meId || !joinState.cardId) throw new Error('missing ids');
+      if (wantLeave) {
+        await trelloWrite(
+          'DELETE',
+          `cards/${joinState.cardId}/idMembers/${joinState.meId}`,
+          'RemoveMemberFromCard'
+        );
+      } else {
+        await trelloWrite(
+          'POST',
+          `cards/${joinState.cardId}/idMembers`,
+          'AddMemberToCardShortcut',
+          { value: joinState.meId }
+        );
+      }
       joinState.joined = !wantLeave;
     } catch (err) {
       console.warn('trello-short-urls: join', err);
