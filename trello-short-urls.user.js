@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Trello short URLs
 // @namespace    https://github.com/lp250isme/trello-short-urls
-// @version      1.2.3
+// @version      1.3.0
 // @description  Shorten Trello URLs, copy the short link, and join/leave the open card from the header
 // @author       kv
 // @license      MIT
@@ -28,7 +28,7 @@
   const ICON_PERSON_CHECK =
     '<path fill="currentcolor" d="M8 8a2.75 2.75 0 1 0 0-5.5A2.75 2.75 0 0 0 8 8m-5 6.5v-1.17C3 11.12 5.79 10 8 10c.5 0 1.02.05 1.5.14A3.5 3.5 0 0 0 8.5 12H3z"/><path fill="currentcolor" fill-rule="evenodd" d="M15.03 9.97a.75.75 0 0 1 0 1.06l-3 3a.75.75 0 0 1-1.06 0l-1.5-1.5a.75.75 0 1 1 1.06-1.06l.97.97 2.47-2.47a.75.75 0 0 1 1.06 0" clip-rule="evenodd"/>';
 
-  const joinState = { card: null, cardId: null, meId: null, joined: false, loading: false, loaded: false };
+  const joinState = { card: null, cardId: null, meId: null, me: null, joined: false, loading: false, loaded: false };
 
   function shortPath(pathname) {
     const m = pathname.match(SHORT);
@@ -43,13 +43,6 @@
   function shortUrl() {
     const short = shortPath(location.pathname);
     return short ? location.origin + short : null;
-  }
-
-  function cookie(name) {
-    const m = document.cookie.match(
-      new RegExp('(?:^|; )' + name.replace(/[$()*+./?[\\]^{|}-]/g, '\\$&') + '=([^;]*)')
-    );
-    return m ? decodeURIComponent(m[1]) : '';
   }
 
   function cleanAddressBar() {
@@ -143,14 +136,9 @@
 
   async function trelloApi(method, path, params = {}) {
     const url = new URL(path.replace(/^\//, ''), 'https://trello.com/1/');
-    const dsc = cookie('dsc');
     for (const [k, v] of Object.entries(params)) {
       if (v != null) url.searchParams.set(k, String(v));
     }
-    // Cookie session is enough on trello.com. Putting the session `token`
-    // cookie on the query string makes Trello treat this as a keyless API
-    // token and 403 DELETE/PUT. Mutating calls still need the CSRF `dsc`.
-    if (dsc && method !== 'GET') url.searchParams.set('dsc', dsc);
     const res = await fetch(url, {
       method,
       credentials: 'include',
@@ -161,20 +149,112 @@
     return text ? JSON.parse(text) : null;
   }
 
-  async function addSelfToCard(cardId, meId) {
-    await trelloApi('POST', `cards/${cardId}/idMembers`, { value: meId });
+  function nodeLabel(node) {
+    return `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''} ${node.textContent || ''}`
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
-  async function removeSelfFromCard(cardId, meId) {
-    const card = await trelloApi('GET', `cards/${cardId}`, { fields: 'idMembers' });
-    const rest = (card.idMembers || []).filter((id) => id !== meId);
-    try {
-      await trelloApi('PUT', `cards/${cardId}`, { idMembers: rest.join(',') });
-      return;
-    } catch (err) {
-      console.warn('trello-short-urls: PUT leave', err);
+  function compactLabel(node) {
+    return nodeLabel(node).replace(/\s+/g, '').toLowerCase();
+  }
+
+  function findClickable(pred, root = document) {
+    return [...root.querySelectorAll('button, a, [role="menuitem"], [role="option"], [role="button"]')].find(
+      (node) => !isOurs(node) && pred(node)
+    );
+  }
+
+  function waitForClickable(pred, timeout = 1800) {
+    return new Promise((resolve) => {
+      const found = findClickable(pred);
+      if (found) return resolve(found);
+      const obs = new MutationObserver(() => {
+        const el = findClickable(pred);
+        if (el) {
+          obs.disconnect();
+          resolve(el);
+        }
+      });
+      obs.observe(document.body, { childList: true, subtree: true });
+      setTimeout(() => {
+        obs.disconnect();
+        resolve(null);
+      }, timeout);
+    });
+  }
+
+  function closePopover() {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  }
+
+  function isJoinItem(node) {
+    const c = compactLabel(node);
+    if (/清單|看板|board|list|member|成員/.test(c) && !/joincard|加入卡片/.test(c)) return false;
+    return /^(join|加入)(card|卡片)?$/i.test(nodeLabel(node)) || c === 'join' || c === '加入' || c === 'joincard' || c === '加入卡片';
+  }
+
+  function isLeaveItem(node) {
+    const c = compactLabel(node);
+    return /leave|離開|退出/.test(c) && !/board|看板/.test(c);
+  }
+
+  function isRemoveFromCard(node) {
+    const c = compactLabel(node);
+    return /removefromcard|從卡片.*移除|移出卡片|移除此成員/.test(c);
+  }
+
+  async function clickViaActionsMenu(wantLeave) {
+    const actions = document.querySelector('[data-testid="card-back-actions-button"]');
+    if (!actions) return false;
+    const opened = actions.getAttribute('aria-expanded') === 'true';
+    if (!opened) actions.click();
+    const item = await waitForClickable(wantLeave ? isLeaveItem : isJoinItem);
+    if (!item) {
+      if (!opened) closePopover();
+      return false;
     }
-    await trelloApi('DELETE', `cards/${cardId}/idMembers/${meId}`);
+    item.click();
+    return true;
+  }
+
+  async function leaveViaOwnAvatar() {
+    const me = joinState.me || {};
+    const avatars = [...document.querySelectorAll('[data-testid="card-back-member-avatar"]')];
+    const mine =
+      avatars.find((el) => {
+        const t = nodeLabel(el);
+        return (me.fullName && t.includes(me.fullName)) || (me.username && t.includes(me.username));
+      }) || (avatars.length === 1 ? avatars[0] : null);
+    if (!mine) return false;
+    mine.click();
+    const item = await waitForClickable(isRemoveFromCard);
+    if (!item) {
+      closePopover();
+      return false;
+    }
+    item.click();
+    return true;
+  }
+
+  async function joinViaMembersPicker() {
+    const me = joinState.me || {};
+    const add = findClickable((node) => {
+      const c = compactLabel(node);
+      return /addmembers|新增成員|加入成員|addmember/.test(c);
+    });
+    if (!add) return false;
+    add.click();
+    const item = await waitForClickable((node) => {
+      const t = nodeLabel(node);
+      return (me.fullName && t.includes(me.fullName)) || (me.username && t.includes(me.username));
+    });
+    if (!item) {
+      closePopover();
+      return false;
+    }
+    item.click();
+    return true;
   }
 
   function applyJoinButton() {
@@ -203,12 +283,13 @@
     applyJoinButton();
     try {
       const [member, card] = await Promise.all([
-        joinState.meId
-          ? Promise.resolve({ id: joinState.meId })
-          : trelloApi('GET', 'members/me', { fields: 'id' }),
+        joinState.me
+          ? Promise.resolve(joinState.me)
+          : trelloApi('GET', 'members/me', { fields: 'id,username,fullName,initials' }),
         trelloApi('GET', `cards/${short}`, { fields: 'id,idMembers' }),
       ]);
       if (cardShortLink() !== short) return;
+      joinState.me = member;
       joinState.meId = member.id;
       joinState.cardId = card.id;
       joinState.joined = (card.idMembers || []).includes(member.id);
@@ -248,27 +329,24 @@
     const short = cardShortLink();
     if (!short || joinState.loading) return;
     const wantLeave = joinState.joined;
-    if (clickNativeJoinLeave(wantLeave)) {
-      joinState.joined = !wantLeave;
-      applyJoinButton();
-      return;
-    }
     joinState.loading = true;
     applyJoinButton();
     try {
-      if (!joinState.meId || !joinState.cardId) await syncJoinState(true);
-      if (!joinState.meId || !joinState.cardId) throw new Error('missing ids');
-      if (wantLeave) {
-        await removeSelfFromCard(joinState.cardId, joinState.meId);
-        joinState.joined = false;
-      } else {
-        await addSelfToCard(joinState.cardId, joinState.meId);
-        joinState.joined = true;
-      }
+      if (!joinState.me) await syncJoinState(true);
+      const ok = clickNativeJoinLeave(wantLeave)
+        || (await clickViaActionsMenu(wantLeave))
+        || (wantLeave && (await leaveViaOwnAvatar()))
+        || (!wantLeave && (await joinViaMembersPicker()));
+      if (!ok) throw new Error('no trello control');
+      joinState.joined = !wantLeave;
     } catch (err) {
       console.warn('trello-short-urls: join', err);
       const btn = document.querySelector(`[data-testid="${JOIN_BTN}"]`);
-      if (btn) setIconButton(btn, { icon: ICON_PERSON, label: wantLeave ? '退出失敗' : '加入失敗' });
+      if (btn) {
+        btn.dataset.label = '';
+        btn.dataset.ui = '';
+        setIconButton(btn, { icon: ICON_PERSON, label: wantLeave ? '退出失敗' : '加入失敗' });
+      }
       return;
     } finally {
       joinState.loading = false;
