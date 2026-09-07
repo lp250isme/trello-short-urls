@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Trello short URLs
 // @namespace    https://github.com/lp250isme/trello-short-urls
-// @version      1.2.2
+// @version      1.2.3
 // @description  Shorten Trello URLs, copy the short link, and join/leave the open card from the header
 // @author       kv
 // @license      MIT
@@ -143,13 +143,38 @@
 
   async function trelloApi(method, path, params = {}) {
     const url = new URL(path.replace(/^\//, ''), 'https://trello.com/1/');
-    const token = cookie('token');
-    if (token) url.searchParams.set('token', token);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const res = await fetch(url, { method, credentials: 'include' });
+    const dsc = cookie('dsc');
+    for (const [k, v] of Object.entries(params)) {
+      if (v != null) url.searchParams.set(k, String(v));
+    }
+    // Cookie session is enough on trello.com. Putting the session `token`
+    // cookie on the query string makes Trello treat this as a keyless API
+    // token and 403 DELETE/PUT. Mutating calls still need the CSRF `dsc`.
+    if (dsc && method !== 'GET') url.searchParams.set('dsc', dsc);
+    const res = await fetch(url, {
+      method,
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    });
     if (!res.ok) throw new Error(`${method} ${path} ${res.status}`);
     const text = await res.text();
     return text ? JSON.parse(text) : null;
+  }
+
+  async function addSelfToCard(cardId, meId) {
+    await trelloApi('POST', `cards/${cardId}/idMembers`, { value: meId });
+  }
+
+  async function removeSelfFromCard(cardId, meId) {
+    const card = await trelloApi('GET', `cards/${cardId}`, { fields: 'idMembers' });
+    const rest = (card.idMembers || []).filter((id) => id !== meId);
+    try {
+      await trelloApi('PUT', `cards/${cardId}`, { idMembers: rest.join(',') });
+      return;
+    } catch (err) {
+      console.warn('trello-short-urls: PUT leave', err);
+    }
+    await trelloApi('DELETE', `cards/${cardId}/idMembers/${meId}`);
   }
 
   function applyJoinButton() {
@@ -207,9 +232,12 @@
     const re = wantLeave
       ? /^(Leave|離開|退出)( card|卡片)?$/i
       : /^(Join|加入)( card|卡片)?$/i;
-    const el = [...document.querySelectorAll('button, a')].find((node) => {
+    const el = [...document.querySelectorAll('button, a, [role="button"]')].find((node) => {
       if (isOurs(node)) return false;
-      return re.test((node.textContent || '').replace(/\s+/g, ' ').trim());
+      const text = `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''} ${node.textContent || ''}`
+        .replace(/\s+/g, ' ')
+        .trim();
+      return re.test(text);
     });
     if (!el) return false;
     el.click();
@@ -231,10 +259,10 @@
       if (!joinState.meId || !joinState.cardId) await syncJoinState(true);
       if (!joinState.meId || !joinState.cardId) throw new Error('missing ids');
       if (wantLeave) {
-        await trelloApi('DELETE', `cards/${joinState.cardId}/idMembers/${joinState.meId}`);
+        await removeSelfFromCard(joinState.cardId, joinState.meId);
         joinState.joined = false;
       } else {
-        await trelloApi('POST', `cards/${joinState.cardId}/idMembers`, { value: joinState.meId });
+        await addSelfToCard(joinState.cardId, joinState.meId);
         joinState.joined = true;
       }
     } catch (err) {
