@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Trello short URLs
 // @namespace    https://github.com/lp250isme/trello-short-urls
-// @version      1.2.0
+// @version      1.2.1
 // @description  Shorten Trello URLs, copy the short link, and join/leave the open card from the header
 // @author       kv
 // @license      MIT
@@ -155,7 +155,7 @@
     if (!btn) return;
     btn.disabled = joinState.loading;
     if (joinState.joined) {
-      setIconButton(btn, { icon: ICON_PERSON_CHECK, label: '已加入，點擊離開' });
+      setIconButton(btn, { icon: ICON_PERSON_CHECK, label: '退出卡片' });
     } else {
       setIconButton(btn, { icon: ICON_PERSON, label: '加入卡片' });
     }
@@ -201,7 +201,7 @@
       return true;
     }
     const re = wantLeave
-      ? /^(Leave|離開)( card|卡片)?$/i
+      ? /^(Leave|離開|退出)( card|卡片)?$/i
       : /^(Join|加入)( card|卡片)?$/i;
     const el = [...document.querySelectorAll('button, a')].find((node) =>
       re.test((node.textContent || '').replace(/\s+/g, ' ').trim())
@@ -235,7 +235,7 @@
     } catch (err) {
       console.warn('trello-short-urls: join', err);
       const btn = document.querySelector(`[data-testid="${JOIN_BTN}"]`);
-      if (btn) setIconButton(btn, { icon: ICON_PERSON, label: wantLeave ? '離開失敗' : '加入失敗' });
+      if (btn) setIconButton(btn, { icon: ICON_PERSON, label: wantLeave ? '退出失敗' : '加入失敗' });
       return;
     } finally {
       joinState.loading = false;
