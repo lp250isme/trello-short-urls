@@ -2,12 +2,12 @@
 // @name         Trello short URLs
 // @name:zh-TW   Trello 短網址
 // @namespace    https://github.com/lp250isme/trello-short-urls
-// @version      1.5.0
+// @version      1.5.1
 // @description  Copy short Trello card/board URLs and join/leave from the card header
 // @description:zh-TW 縮短 Trello 卡片／看板網址，並在卡片 header 加入或退出
 // @author       kv
 // @license      MIT
-// @homepageURL  https://github.com/lp250isme/trello-short-urls
+// @homepageURL  https://greasyfork.org/scripts/594726-trello-short-urls
 // @supportURL   https://github.com/lp250isme/trello-short-urls/issues
 // @match        https://trello.com/*
 // @match        https://www.trello.com/*

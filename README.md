@@ -11,13 +11,10 @@ Also works for boards (`/b/{id}/...` → `/b/{id}`). Title slugs and query param
 
 ## Install
 
+**[Greasy Fork](https://greasyfork.org/zh-TW/scripts/594726-trello-short-urls)**（建議）或 [GitHub raw](https://raw.githubusercontent.com/lp250isme/trello-short-urls/main/trello-short-urls.user.js)
+
 1. Install [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/).
-2. Open the raw script: [trello-short-urls.user.js](https://raw.githubusercontent.com/lp250isme/trello-short-urls/main/trello-short-urls.user.js)
-3. Confirm install.
-
-Greasy Fork listing: import this GitHub raw URL (webhook sync recommended):
-
-`https://raw.githubusercontent.com/lp250isme/trello-short-urls/main/trello-short-urls.user.js`
+2. Open the install page and confirm.
 
 ## What it does
 
