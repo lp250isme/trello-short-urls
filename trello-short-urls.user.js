@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Trello short URLs
 // @namespace    https://github.com/lp250isme/trello-short-urls
-// @version      1.2.1
+// @version      1.2.2
 // @description  Shorten Trello URLs, copy the short link, and join/leave the open card from the header
 // @author       kv
 // @license      MIT
@@ -88,6 +88,8 @@
   }
 
   function setIconButton(btn, { icon, label }) {
+    if (btn.dataset.label === label) return;
+    btn.dataset.label = label;
     const svg = btn.querySelector('svg');
     if (svg) svg.innerHTML = icon;
     btn.setAttribute('aria-label', label);
@@ -153,6 +155,9 @@
   function applyJoinButton() {
     const btn = document.querySelector(`[data-testid="${JOIN_BTN}"]`);
     if (!btn) return;
+    const ui = `${joinState.joined}:${joinState.loading}`;
+    if (btn.dataset.ui === ui) return;
+    btn.dataset.ui = ui;
     btn.disabled = joinState.loading;
     if (joinState.joined) {
       setIconButton(btn, { icon: ICON_PERSON_CHECK, label: '退出卡片' });
@@ -165,7 +170,6 @@
     const short = cardShortLink();
     if (!short) return;
     if (!force && joinState.card === short && (joinState.loaded || joinState.loading)) {
-      applyJoinButton();
       return;
     }
     joinState.card = short;
@@ -203,9 +207,10 @@
     const re = wantLeave
       ? /^(Leave|離開|退出)( card|卡片)?$/i
       : /^(Join|加入)( card|卡片)?$/i;
-    const el = [...document.querySelectorAll('button, a')].find((node) =>
-      re.test((node.textContent || '').replace(/\s+/g, ' ').trim())
-    );
+    const el = [...document.querySelectorAll('button, a')].find((node) => {
+      if (isOurs(node)) return false;
+      return re.test((node.textContent || '').replace(/\s+/g, ' ').trim());
+    });
     if (!el) return false;
     el.click();
     return true;
@@ -244,6 +249,7 @@
   }
 
   function injectJoinButton(ul) {
+    const existed = document.querySelector(`[data-testid="${JOIN_BTN}"]`);
     const btn = cloneHeaderButton(ul, JOIN_BTN);
     if (!btn) return;
     if (!btn.dataset.bound) {
@@ -254,9 +260,9 @@
         e.stopImmediatePropagation();
         toggleJoin();
       });
+      applyJoinButton();
     }
-    applyJoinButton();
-    syncJoinState();
+    if (!existed) syncJoinState();
   }
 
   function injectHeaderButtons() {
@@ -267,34 +273,53 @@
     injectJoinButton(ul);
   }
 
+  function isOurs(node) {
+    return !!node?.closest?.(
+      `[data-testid="${COPY_BTN}"], [data-testid="${JOIN_BTN}"]`
+    );
+  }
+
+  let raf = 0;
+  function scheduleWork() {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      cleanAddressBar();
+      injectHeaderButtons();
+    });
+  }
+
   function onDomChange(root) {
-    cleanAddressBar();
-    injectHeaderButtons();
+    scheduleWork();
     if (root) cleanAnchors(root);
   }
 
   history.pushState = function (...args) {
     const ret = origPush(...args);
-    queueMicrotask(() => onDomChange(document));
+    queueMicrotask(scheduleWork);
     return ret;
   };
   history.replaceState = function (...args) {
     const ret = origReplace(...args);
-    queueMicrotask(() => onDomChange(document));
+    queueMicrotask(scheduleWork);
     return ret;
   };
-  window.addEventListener('popstate', () => onDomChange(document));
+  window.addEventListener('popstate', scheduleWork);
   document.addEventListener('DOMContentLoaded', () => onDomChange(document));
 
   new MutationObserver((muts) => {
-    cleanAddressBar();
-    injectHeaderButtons();
+    let oursOnly = true;
     for (const m of muts) {
+      if (!isOurs(m.target)) oursOnly = false;
       for (const n of m.addedNodes) {
-        if (n.nodeType === 1) cleanAnchors(n);
+        if (n.nodeType !== 1) continue;
+        if (isOurs(n)) continue;
+        oursOnly = false;
+        cleanAnchors(n);
       }
     }
+    if (!oursOnly) scheduleWork();
   }).observe(document.documentElement, { childList: true, subtree: true });
 
-  onDomChange(document);
+  scheduleWork();
 })();
